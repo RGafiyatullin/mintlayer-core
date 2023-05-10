@@ -149,6 +149,67 @@ pub enum ConnectTransactionError {
     NotEnoughPledgeToCreateStakePool(Id<Transaction>, Amount, Amount),
 }
 
+impl ConnectTransactionError {
+    pub fn is_utxo_missing_error(&self) -> bool {
+        match self {
+            // This signifies a possible orphan
+            Self::MissingOutputOrSpent => true,
+            // These do not
+            Self::StorageError(_)
+            | Self::TxNumWrongInBlockOnConnect(_, _)
+            | Self::TxNumWrongInBlockOnDisconnect(_, _)
+            | Self::InvariantBrokenAlreadyUnspent
+            | Self::MissingTxInputs
+            | Self::MissingTxUndo(_)
+            | Self::MissingBlockUndo(_)
+            | Self::MissingBlockRewardUndo(_)
+            | Self::MissingMempoolTxsUndo
+            | Self::TxUndoWithDependency(_)
+            | Self::AttemptToPrintMoney(_, _)
+            | Self::BlockRewardInputOutputMismatch(_, _)
+            | Self::TxFeeTotalCalcFailed(_, _)
+            | Self::SignatureVerificationFailed(_)
+            | Self::BlockHeightArithmeticError
+            | Self::BlockTimestampArithmeticError
+            | Self::InvariantErrorHeaderCouldNotBeLoaded(_)
+            | Self::InvariantErrorHeaderCouldNotBeLoadedFromHeight(_, _)
+            | Self::BlockIndexCouldNotBeLoaded(_)
+            | Self::FailedToAddAllFeesOfBlock(_)
+            | Self::RewardAdditionError(_)
+            | Self::TimeLockViolation(_)
+            | Self::UtxoError(_)
+            | Self::TokensError(_)
+            | Self::TxIndexError(_)
+            | Self::TransactionVerifierError(_)
+            | Self::UtxoBlockUndoError(_)
+            | Self::AccountingBlockUndoError(_)
+            | Self::BurnAmountSumError(_)
+            | Self::AttemptToSpendBurnedAmount
+            | Self::PoSAccountingError(_)
+            | Self::MissingPoSAccountingUndo(_)
+            | Self::SpendStakeError(_)
+            | Self::InvalidInputTypeInTx
+            | Self::InvalidOutputTypeInTx
+            | Self::InvalidInputTypeInReward
+            | Self::InvalidOutputTypeInReward
+            | Self::PoolOwnerBalanceNotFound(_)
+            | Self::PoolDataNotFound(_)
+            | Self::PoolOwnerRewardCalculationFailed(_, _)
+            | Self::PoolOwnerRewardCannotExceedTotalReward(..)
+            | Self::DelegationsRewardSumFailed(..)
+            | Self::DelegationRewardOverflow(..)
+            | Self::DistributedDelegationsRewardExceedTotal(..)
+            | Self::TotalDelegationBalanceZero(_)
+            | Self::UndoFetchFailure
+            | Self::TxVerifierStorage
+            | Self::DestinationRetrievalError(_)
+            | Self::DelegationDataNotFound(_)
+            | Self::OutputTimelockError(_)
+            | Self::NotEnoughPledgeToCreateStakePool(..) => false,
+        }
+    }
+}
+
 impl From<chainstate_storage::Error> for ConnectTransactionError {
     fn from(err: chainstate_storage::Error) -> Self {
         // On storage level called err.recoverable(), if an error is unrecoverable then it calls panic!

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use common::{
-    chain::{SignedTransaction, Transaction},
+    chain::{OutPoint, SignedTransaction, Transaction},
     primitives::{Id, Idable},
 };
 
@@ -52,6 +52,10 @@ impl TxEntry {
 
     pub fn size(&self) -> usize {
         serialization::Encode::encoded_size(self.transaction())
+    }
+
+    pub fn outpoints(&self) -> impl Iterator<Item = &OutPoint> + '_ {
+        self.transaction().inputs().iter().map(|i| i.outpoint())
     }
 }
 
