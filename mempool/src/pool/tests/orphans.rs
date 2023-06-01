@@ -17,17 +17,6 @@ use common::primitives::id::hash_encoded;
 
 use super::*;
 
-fn tx_status<T>(mempool: &Mempool<T>, tx_id: &Id<Transaction>) -> Option<TxStatus> {
-    let in_mempool = mempool.contains_transaction(tx_id);
-    let in_orphan_pool = mempool.contains_orphan_transaction(tx_id);
-    match (in_mempool, in_orphan_pool) {
-        (false, false) => None,
-        (false, true) => Some(TxStatus::InOrphanPool),
-        (true, false) => Some(TxStatus::InMempool),
-        (true, true) => panic!("Transaction both in mempool and orphan pool"),
-    }
-}
-
 #[rstest]
 #[case(
     Seed::from_entropy(),
@@ -154,11 +143,8 @@ async fn sequence_permutation(#[case] seed: Seed) {
     let all_tx_ids: Vec<_> = full_tx_sequence.iter().map(|tx| tx.transaction().get_id()).collect();
 
     // Pick a subset of these transactions, taking each with 90% probability.
-    let tx_subseq_0: Vec<_> = full_tx_sequence
-        .iter()
-        .filter(|_| rng.gen_range(0..100) < 90)
-        .cloned()
-        .collect();
+    let tx_subseq_0: Vec<_> =
+        full_tx_sequence.iter().filter(|_| rng.gen_bool(0.9)).cloned().collect();
 
     // Take the same subsequence but with randomly shuffled order.
     // This means some transactions will be temporarily in the orphan pool.
@@ -176,11 +162,11 @@ async fn sequence_permutation(#[case] seed: Seed) {
 
         // Now add each transaction in the subsequence
         tx_subseq.into_iter().for_each(|tx| {
-            mempool.add_transaction(tx).expect("tx add");
+            let _ = mempool.add_transaction(tx).expect("tx add");
         });
 
         // Check the final state of each transaction in the original sequence
-        results.push(all_tx_ids.iter().map(|id| tx_status(&mempool, id)).collect());
+        results.push(all_tx_ids.iter().map(|id| TxStatus::fetch(&mempool, id)).collect());
     }
 
     // Check the final outcome, i.e. which transactions end up in mempool versus orphan pool, is
