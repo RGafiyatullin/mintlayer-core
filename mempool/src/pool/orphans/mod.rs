@@ -37,6 +37,8 @@ static_assertions::const_assert!(ORPHAN_POOL_SIZE_HARD_LIMIT < InternalIdIntType
 struct InternalId(InternalIdIntType);
 
 impl InternalId {
+    const MAX: Self = Self(InternalIdIntType::MAX);
+
     fn new(n: usize) -> Self {
         assert!(
             n < ORPHAN_POOL_SIZE_HARD_LIMIT,
@@ -60,7 +62,7 @@ struct TxOrphanPoolMaps {
     by_insertion_time: BTreeSet<(Time, InternalId)>,
 
     /// Transactions indexed by the previous output they spend
-    by_spent_output: BTreeMap<OutPoint, InternalId>,
+    by_spent_output: BTreeSet<(OutPoint, InternalId)>,
 }
 
 impl TxOrphanPoolMaps {
@@ -68,7 +70,7 @@ impl TxOrphanPoolMaps {
         Self {
             by_tx_id: BTreeMap::new(),
             by_insertion_time: BTreeSet::new(),
-            by_spent_output: BTreeMap::new(),
+            by_spent_output: BTreeSet::new(),
         }
     }
 
@@ -89,11 +91,8 @@ impl TxOrphanPoolMaps {
         assert!(removed, "Tx entry not present in the insertion time map");
 
         entry.outpoints().for_each(|outpt| {
-            let map_iid = self.by_spent_output.remove(outpt).expect("spent output to be indexed");
-            assert_eq!(
-                iid, map_iid,
-                "Wrong transaction associated with given output"
-            );
+            let removed = self.by_spent_output.remove(&(outpt.clone(), iid));
+            assert!(removed, "Transaction outpoint entry expected to be present");
         })
     }
 }
@@ -144,11 +143,12 @@ impl TxOrphanPool {
         tx_id: Id<Transaction>,
     ) -> impl Iterator<Item = Id<Transaction>> + '_ {
         let source = OutPointSourceId::Transaction(tx_id);
-        let outpoint_range = OutPoint::new(source.clone(), 0)..=OutPoint::new(source, u32::MAX);
+        let lower_bound = (OutPoint::new(source.clone(), 0), InternalId(0));
+        let upper_bound = (OutPoint::new(source, u32::MAX), InternalId::MAX);
         self.maps
             .by_spent_output
-            .range(outpoint_range)
-            .filter_map(|(_, &iid)| self.is_ready(iid).then(|| *self.get_at(iid).tx_id()))
+            .range(lower_bound..=upper_bound)
+            .filter_map(|(_, iid)| self.is_ready(*iid).then(|| *self.get_at(*iid).tx_id()))
     }
 
     /// Check no dependencies of given transaction are still in orphan pool so it can be considered
@@ -175,11 +175,6 @@ impl TxOrphanPool {
     pub fn insert(&mut self, entry: TxEntry) -> Result<(), OrphanPoolError> {
         let tx_id = *entry.tx_id();
         ensure!(!self.contains(&tx_id), OrphanPoolError::Duplicate);
-
-        ensure!(
-            !entry.outpoints().any(|outpt| self.maps.by_spent_output.contains_key(outpt)),
-            OrphanPoolError::Conflict,
-        );
 
         self.maps.insert(&entry, InternalId::new(self.len()));
         self.transactions.push(entry);
