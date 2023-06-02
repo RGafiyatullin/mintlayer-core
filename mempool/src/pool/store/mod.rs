@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod mem_usage;
+
 use std::{
     cmp::Ordering,
     collections::{btree_map::Entry::Occupied, BTreeMap, BTreeSet},
