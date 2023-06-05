@@ -389,7 +389,7 @@ impl<M: GetMemoryUsage> Mempool<M> {
                     let delta = tx_verifier.consume()?;
                     Ok(VerificationOutcome::Valid { transaction, delta })
                 }
-                Err(err) if err.is_utxo_missing_error() => {
+                Err(err) if orphans::is_orphan_error(&err) => {
                     Ok(VerificationOutcome::Orphan { transaction })
                 }
                 Err(err) => Err(err.into()),

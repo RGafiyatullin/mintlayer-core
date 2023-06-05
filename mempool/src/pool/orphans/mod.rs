@@ -25,6 +25,9 @@ use utils::{const_value::ConstValue, ensure};
 
 use super::{OrphanPoolError, Time, TxEntry};
 use crate::config;
+pub use detect::is_orphan_error;
+
+mod detect;
 
 /// Max number of transactions the orphan pool data structure can handle
 pub const ORPHAN_POOL_SIZE_HARD_LIMIT: usize = 50_000;
