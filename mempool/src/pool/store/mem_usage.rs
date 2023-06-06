@@ -28,11 +28,11 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { current_usage: 0 }
     }
 
-    fn get_usage(&self) -> usize {
+    pub fn get_usage(&self) -> usize {
         self.current_usage
     }
 }
@@ -40,7 +40,7 @@ impl Tracker {
 /// A data structure which has its memory consumption tracked
 #[must_use = "Memory-tracked object dropped without using Tracked::release"]
 #[derive(Eq, PartialEq, PartialOrd, Ord)]
-struct Tracked<T>(T);
+pub struct Tracked<T>(T);
 
 impl<T: MemUsage> Tracked<T> {
     /// Create a new object with tracked memory usage
