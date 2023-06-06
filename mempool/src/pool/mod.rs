@@ -18,6 +18,7 @@ use std::{
     collections::{BTreeSet, VecDeque},
     mem,
     num::NonZeroUsize,
+    ops::Deref,
     sync::Arc,
     time::Duration,
 };
@@ -256,7 +257,7 @@ impl<M> Mempool<M> {
     }
 
     pub fn transaction(&self, id: &Id<Transaction>) -> Option<&SignedTransaction> {
-        self.store.txs_by_id.get(id).map(TxMempoolEntry::transaction)
+        self.store.get_entry(id).map(TxMempoolEntry::transaction)
     }
 
     pub fn contains_orphan_transaction(&self, id: &Id<Transaction>) -> bool {
@@ -700,10 +701,11 @@ impl<M: GetMemoryUsage> Mempool<M> {
     }
 
     fn remove_expired_transactions(&mut self) {
-        let expired: Vec<_> = self
+        let expired_ids: Vec<_> = self
             .store
             .txs_by_creation_time
             .values()
+            .map(Deref::deref)
             .flatten()
             .map(|entry_id| self.store.txs_by_id.get(entry_id).expect("entry should exist"))
             .filter(|entry| {
@@ -719,22 +721,23 @@ impl<M: GetMemoryUsage> Mempool<M> {
                 }
                 expired
             })
-            .cloned()
+            .map(|entry| *entry.tx_id())
             .collect();
 
-        for tx_id in expired.iter().map(|entry| entry.tx_id()) {
+        for tx_id in expired_ids.iter() {
             self.store.drop_tx_and_descendants(tx_id, MempoolRemovalReason::Expiry)
         }
     }
 
     fn trim(&mut self) -> Result<Vec<FeeRate>, MempoolPolicyError> {
         let mut removed_fees = Vec::new();
-        while !self.store.is_empty() && self.get_memory_usage() > self.max_size {
+        while !self.store.is_empty() && self.store.memory_usage() > self.max_size {
             // TODO sort by descendant score, not by fee
             let removed_id = self
                 .store
                 .txs_by_descendant_score
                 .values()
+                .map(Deref::deref)
                 .flatten()
                 .copied()
                 .next()
@@ -826,6 +829,7 @@ impl<M: GetMemoryUsage> Mempool<M> {
         self.store
             .txs_by_descendant_score
             .values()
+            .map(Deref::deref)
             .flatten()
             .map(|id| self.store.get_entry(id).expect("entry").transaction())
             .cloned()
@@ -836,7 +840,8 @@ impl<M: GetMemoryUsage> Mempool<M> {
         &self,
         mut tx_accumulator: Box<dyn TransactionAccumulator>,
     ) -> Box<dyn TransactionAccumulator> {
-        let mut tx_iter = self.store.txs_by_ancestor_score.values().flatten().rev();
+        let mut tx_iter =
+            self.store.txs_by_ancestor_score.values().map(Deref::deref).flatten().rev();
         // TODO implement Iterator for MempoolStore so we don't need to use `expect` here
         while !tx_accumulator.done() {
             if let Some(tx_id) = tx_iter.next() {
