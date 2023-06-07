@@ -66,18 +66,22 @@ newtype! {
 }
 
 #[cfg(test)]
-type EntryDropPolicy = mem_usage::AssertDropPolicy;
+type StrictDropPolicy = mem_usage::AssertDropPolicy;
 #[cfg(not(test))]
-type EntryDropPolicy = NoopDropPolicy;
+type StrictDropPolicy = NoopDropPolicy;
 
-type TrackedMap<K, V> = Tracked<BTreeMap<K, Tracked<V, EntryDropPolicy>>, NoopDropPolicy>;
-type TrackedTxIdMultiMap<K> = TrackedMap<K, BTreeSet<Id<Transaction>>>;
+type TrackedRelaxed<T> = Tracked<T, NoopDropPolicy>;
+type TrackedStrict<T> = Tracked<T, StrictDropPolicy>;
+
+type TrackedMap<K, V> = TrackedRelaxed<BTreeMap<K, V>>;
+type TrackedSet<K> = TrackedRelaxed<BTreeSet<K>>;
+type TrackedTxIdMultiMap<K> = TrackedMap<K, TrackedSet<Id<Transaction>>>;
 
 #[derive(Debug)]
 pub struct MempoolStore {
     // This is the "main" data structure storing Mempool entries. All other structures in the
     // MempoolStore contain ids (hashes) of entries, sorted according to some order of interest.
-    pub txs_by_id: TrackedMap<Id<Transaction>, TxMempoolEntry>,
+    pub txs_by_id: TrackedMap<Id<Transaction>, TrackedStrict<TxMempoolEntry>>,
 
     // Mempool entries sorted by descendant score.
     // We keep this index so that when the mempool grows full, we know which transactions are the
@@ -107,15 +111,15 @@ pub struct MempoolStore {
     //
     // We keep the information of which outpoints are spent by entries currently in the mempool.
     // This allows us to recognize conflicts (double-spends) and handle them
-    pub spender_txs: Tracked<BTreeMap<OutPoint, Id<Transaction>>, NoopDropPolicy>,
+    pub spender_txs: TrackedRelaxed<BTreeMap<OutPoint, Id<Transaction>>>,
 
     // Track transactions by internal unique sequence number. This is used to recover the order in
     // which the transactions have been inserted into the mempool, so they can be re-inserted in
     // the same order after a reorg. We keep both mapping from transactions to sequence numbers and
     // the mapping from sequence number back to transaction. The sequence number to be allocated to
     // the next incoming transaction is kept separately.
-    txs_by_seq_no: Tracked<BTreeMap<usize, Id<Transaction>>, NoopDropPolicy>,
-    seq_nos_by_tx: Tracked<BTreeMap<Id<Transaction>, usize>, NoopDropPolicy>,
+    txs_by_seq_no: TrackedRelaxed<BTreeMap<usize, Id<Transaction>>>,
+    seq_nos_by_tx: TrackedRelaxed<BTreeMap<Id<Transaction>, usize>>,
     next_seq_no: usize,
 
     /// Memory usage accumulator
@@ -139,17 +143,16 @@ pub enum MempoolRemovalReason {
 
 impl MempoolStore {
     pub fn new() -> Self {
-        let mut tracker = mem_usage::Tracker::new();
         Self {
-            txs_by_descendant_score: Tracked::new(&mut tracker, BTreeMap::new()),
-            txs_by_ancestor_score: Tracked::new(&mut tracker, BTreeMap::new()),
-            txs_by_id: Tracked::new(&mut tracker, BTreeMap::new()),
-            txs_by_creation_time: Tracked::new(&mut tracker, BTreeMap::new()),
-            spender_txs: Tracked::new(&mut tracker, BTreeMap::new()),
-            txs_by_seq_no: Tracked::new(&mut tracker, BTreeMap::new()),
-            seq_nos_by_tx: Tracked::new(&mut tracker, BTreeMap::new()),
+            txs_by_descendant_score: Tracked::default(),
+            txs_by_ancestor_score: Tracked::default(),
+            txs_by_id: Tracked::default(),
+            txs_by_creation_time: Tracked::default(),
+            spender_txs: Tracked::default(),
+            txs_by_seq_no: Tracked::default(),
+            seq_nos_by_tx: Tracked::default(),
             next_seq_no: 0,
-            mem_tracker: tracker,
+            mem_tracker: mem_usage::Tracker::new(),
         }
     }
 
@@ -176,18 +179,39 @@ impl MempoolStore {
 
     #[cfg(test)]
     fn assert_valid_inner(&self) {
+        fn map_size<K, V: mem_usage::MemoryUsage>(map: &BTreeMap<K, V>) -> usize {
+            use mem_usage::MemoryUsage;
+            let vals_size = map.values().map(|v| v.indirect_memory_usage()).sum::<usize>();
+            map.indirect_memory_usage() + vals_size
+        }
+        let expected_size = 0usize
+            + map_size(&self.txs_by_id)
+            + map_size(&self.txs_by_descendant_score)
+            + map_size(&self.txs_by_ancestor_score)
+            + map_size(&self.txs_by_seq_no)
+            + map_size(&self.spender_txs)
+            + map_size(&self.txs_by_creation_time)
+            + map_size(&self.seq_nos_by_tx);
+        assert_eq!(
+            self.mem_tracker.get_usage(),
+            expected_size,
+            "Memory size tracker out of sync",
+        );
+
         let entries = self
             .txs_by_descendant_score
             .values()
             .map(|ids| ids.deref())
             .flatten()
             .collect::<Vec<_>>();
+
         for id in self.txs_by_id.keys() {
             assert_eq!(
                 entries.iter().filter(|entry_id| ***entry_id == *id).count(),
                 1
             )
         }
+
         for entry in self.txs_by_id.values() {
             for child in &entry.children {
                 assert!(self.txs_by_id.get(child).expect("child").parents.contains(entry.tx_id()))
@@ -501,18 +525,24 @@ impl MempoolStore {
     }
 
     /// Take all the transactions from the store in the original order of insertion
-    pub fn into_transactions(self) -> impl Iterator<Item = TxEntry> {
-        let Self {
-            txs_by_id,
-            txs_by_seq_no,
-            ..
-        } = self;
+    pub fn into_transactions(mut self) -> impl Iterator<Item = TxEntry> {
+        let mut txs_by_id = Tracked::forget(std::mem::take(&mut self.txs_by_id));
+        let txs_by_seq_no = Tracked::forget(std::mem::take(&mut self.txs_by_seq_no));
 
-        let mut txs_by_id = Tracked::forget(txs_by_id);
-
-        Tracked::forget(txs_by_seq_no).into_values().map(move |id| {
+        txs_by_seq_no.into_values().map(move |id| {
             Tracked::forget(txs_by_id.remove(&id).expect("transaction must be present")).entry
         })
+    }
+}
+
+#[cfg(test)]
+impl Drop for MempoolStore {
+    fn drop(&mut self) {
+        // Clean up all the tracked stuff that could assert during testing. We do not miss any
+        // memory size updates because the tracker is being destroyed at the same time.
+        Tracked::forget(std::mem::take(&mut self.txs_by_id))
+            .into_values()
+            .for_each(|entry| std::mem::drop(Tracked::forget(entry)));
     }
 }
 

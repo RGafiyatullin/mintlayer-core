@@ -1367,8 +1367,13 @@ async fn ancestor_score(#[case] seed: Seed) -> anyhow::Result<()> {
 }
 
 fn check_txs_sorted_by_ancestor_score(mempool: &Mempool<SystemUsageEstimator>) {
-    let txs_by_ancestor_score =
-        mempool.store.txs_by_descendant_score.values().flatten().collect::<Vec<_>>();
+    let txs_by_ancestor_score = mempool
+        .store
+        .txs_by_descendant_score
+        .values()
+        .map(Deref::deref)
+        .flatten()
+        .collect::<Vec<_>>();
     for i in 0..(txs_by_ancestor_score.len() - 1) {
         log::debug!("i =  {}", i);
         let tx_id = txs_by_ancestor_score.get(i).unwrap();
@@ -1460,7 +1465,7 @@ async fn descendant_score(#[case] seed: Seed) -> anyhow::Result<()> {
     log::debug!("entry a has score {:?}", entry_a.descendant_score());
     let entry_b = mempool.store.txs_by_id.get(&tx_b_id).expect("tx_b");
     log::debug!("entry b has score {:?}", entry_b.descendant_score());
-    let entry_c = mempool.store.txs_by_id.get(&tx_c_id).expect("tx_c").clone();
+    let entry_c = mempool.store.txs_by_id.get(&tx_c_id).expect("tx_c").deref().clone();
     log::debug!("entry c has score {:?}", entry_c.descendant_score());
     assert_eq!(entry_a.fee(), entry_a.fees_with_descendants());
     assert_eq!(
@@ -1486,8 +1491,13 @@ async fn descendant_score(#[case] seed: Seed) -> anyhow::Result<()> {
 }
 
 fn check_txs_sorted_by_descendant_sore(mempool: &Mempool<SystemUsageEstimator>) {
-    let txs_by_descendant_score =
-        mempool.store.txs_by_descendant_score.values().flatten().collect::<Vec<_>>();
+    let txs_by_descendant_score = mempool
+        .store
+        .txs_by_descendant_score
+        .values()
+        .map(Deref::deref)
+        .flatten()
+        .collect::<Vec<_>>();
     for i in 0..(txs_by_descendant_score.len() - 1) {
         log::debug!("i =  {}", i);
         let tx_id = txs_by_descendant_score.get(i).unwrap();
