@@ -17,13 +17,14 @@
 
 use std::{
     mem,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{self, AtomicUsize},
 };
 
 use common::chain::{
     signature::inputsig::InputWitness, stakelock::StakePoolData, SignedTransaction, TxInput,
     TxOutput,
 };
+use logging::log;
 
 use super::TxMempoolEntry;
 
@@ -31,30 +32,41 @@ use super::TxMempoolEntry;
 #[derive(Debug)]
 pub struct Tracker {
     current_usage: AtomicUsize,
+    peak_usage: AtomicUsize,
 }
 
 impl Tracker {
     pub fn new() -> Self {
-        let current_usage = AtomicUsize::new(0);
-        Self { current_usage }
+        Self {
+            current_usage: AtomicUsize::new(0),
+            peak_usage: AtomicUsize::new(0),
+        }
     }
 
     pub fn get_usage(&self) -> usize {
-        self.current_usage.load(Ordering::Acquire)
+        self.current_usage.load(atomic::Ordering::Acquire)
     }
 
     fn add(&self, amount: usize) {
-        self.current_usage.fetch_add(amount, Ordering::AcqRel);
+        let old = self.current_usage.fetch_add(amount, atomic::Ordering::AcqRel);
+        let new = old + amount;
+        let _ = self.peak_usage.fetch_max(new, atomic::Ordering::AcqRel);
+        self.log_change(old, new);
     }
 
     fn sub(&self, amount: usize) {
-        self.current_usage.fetch_sub(amount, Ordering::AcqRel);
+        let old = self.current_usage.fetch_sub(amount, atomic::Ordering::AcqRel);
+        self.log_change(old, old - amount);
+    }
+
+    fn log_change(&self, old: usize, new: usize) {
+        log::trace!("Updated memory tracker {self:p}: {old} bytes => {new} bytes");
     }
 }
 
 /// A data structure which has its memory consumption tracked
-#[must_use = "Memory-tracked object dropped without using Tracked::release"]
 #[derive(Eq, PartialEq, PartialOrd, Ord, Debug)]
+#[must_use = "Memory-tracked object dropped without using Tracked::release"]
 pub struct Tracked<T, D> {
     obj: T,
     drop_policy: D,
@@ -114,7 +126,7 @@ impl<T, D> std::ops::Deref for Tracked<T, D> {
 }
 
 /// What to do with a [Tracked] object if it's dropped without being released. The actual handling
-/// of the drop logic is done in the policy type's Drop trait.
+/// of the drop logic is done in the policy type's Drop implementation.
 pub trait DropPolicy {
     fn on_release(&mut self) {}
 }
@@ -145,11 +157,11 @@ impl DropPolicy for AssertDropPolicy {
 
 impl Drop for AssertDropPolicy {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
-            assert!(
-                self.released,
-                "A memory-tracked value dropped without being released"
-            );
+        if !self.released {
+            log::error!("A memory-tracked value dropped without being released");
+            if !std::thread::panicking() {
+                panic!("A memory-tracked value dropped without being released");
+            }
         }
     }
 }
@@ -257,20 +269,24 @@ mod btree {
 pub trait MemoryUsage {
     /// Get amount of memory taken by the data owned by `self` (e.g. if it contains `Box` or `Vec`)
     fn indirect_memory_usage(&self) -> usize;
-
-    fn total_memory_usage(&self) -> usize
-    where
-        Self: Sized,
-    {
-        self.indirect_memory_usage() + mem::size_of::<Self>()
-    }
 }
 
-impl MemoryUsage for u8 {
-    fn indirect_memory_usage(&self) -> usize {
-        0
-    }
+/// Total memory usage (indirectly by pointers + for the object itself)
+fn total_memory_usage<T: MemoryUsage>(val: &T) -> usize {
+    val.indirect_memory_usage() + mem::size_of::<T>()
 }
+
+macro_rules! impl_no_indirect_memory_usage {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl MemoryUsage for $ty {
+                fn indirect_memory_usage(&self) -> usize { 0 }
+            }
+        )*
+    };
+}
+
+impl_no_indirect_memory_usage!(bool, usize, u8, u16, u32, u64, u128);
 
 impl<K, V> MemoryUsage for std::collections::BTreeMap<K, V> {
     /// The mem usage for [BTreeMap].
@@ -311,7 +327,19 @@ impl<T: MemoryUsage> MemoryUsage for Vec<T> {
 
 impl<T: MemoryUsage> MemoryUsage for Box<T> {
     fn indirect_memory_usage(&self) -> usize {
-        T::total_memory_usage(self.as_ref())
+        total_memory_usage::<T>(self.as_ref())
+    }
+}
+
+impl<T: MemoryUsage, D> MemoryUsage for Tracked<T, D> {
+    fn indirect_memory_usage(&self) -> usize {
+        self.obj.indirect_memory_usage()
+    }
+}
+
+impl<T> MemoryUsage for common::primitives::Id<T> {
+    fn indirect_memory_usage(&self) -> usize {
+        0
     }
 }
 
@@ -332,13 +360,6 @@ impl MemoryUsage for SignedTransaction {
     }
 }
 
-impl MemoryUsage for TxInput {
-    fn indirect_memory_usage(&self) -> usize {
-        // No data owned by this object
-        0
-    }
-}
-
 impl MemoryUsage for TxOutput {
     fn indirect_memory_usage(&self) -> usize {
         match self {
@@ -353,12 +374,6 @@ impl MemoryUsage for TxOutput {
     }
 }
 
-impl MemoryUsage for StakePoolData {
-    fn indirect_memory_usage(&self) -> usize {
-        0
-    }
-}
-
 impl MemoryUsage for InputWitness {
     fn indirect_memory_usage(&self) -> usize {
         match self {
@@ -367,6 +382,8 @@ impl MemoryUsage for InputWitness {
         }
     }
 }
+
+impl_no_indirect_memory_usage!(TxInput, StakePoolData);
 
 /// Types where the object created by T::default() takes no indirect memory.
 pub trait ZeroUsageDefault: MemoryUsage + Default {}
